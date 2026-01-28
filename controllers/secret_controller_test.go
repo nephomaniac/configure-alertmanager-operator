@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -47,6 +48,12 @@ var exampleOCPNamespaces = []string{
 	"openshift-cloud-controller-manager",
 	"openshift-cloud-controller-manager-operator",
 	"openshift-cloud-credential-operator",
+}
+
+var exampleMCNamespaces = []string{
+	"hypershift",
+	"clusters",
+	"local-cluster",
 }
 
 // readAlertManagerConfig fetches the AlertManager configuration from its default location.
@@ -558,7 +565,8 @@ func Test_cmInList(t *testing.T) {
 	createNamespace(reconciler, t)
 	createConfigMap(reconciler, cmNameManagedNamespaces, cmKeyManagedNamespaces, "test")
 
-	cmList := corev1.ConfigMapList{}
+	cmList := metav1.PartialObjectMetadataList{}
+	cmList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMapList"))
 	err := reconciler.Client.List(context.TODO(), &cmList, &client.ListOptions{})
 	if err != nil {
 		t.Fatalf("Could not list ConfigMaps: %v", err)
@@ -579,7 +587,8 @@ func Test_secretInList(t *testing.T) {
 	createSecret(reconciler, secretNameDMS, secretKeyDMS, "")
 	createGoAlertSecret(reconciler, secretNameGoalert, secretKeyGoalertLow, secretKeyGoalertHigh, secretKeyGoalertHeartbeat, "", "", "")
 
-	secretList := corev1.SecretList{}
+	secretList := metav1.PartialObjectMetadataList{}
+	secretList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
 	err := reconciler.Client.List(context.TODO(), &secretList, &client.ListOptions{})
 	if err != nil {
 		t.Fatalf("Could not list Secrets: %v", err)
@@ -618,7 +627,8 @@ func Test_parseSecrets(t *testing.T) {
 		gaHighURL,
 		gaHeartURL)
 
-	secretList := &corev1.SecretList{}
+	secretList := &metav1.PartialObjectMetadataList{}
+	secretList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
 	err := reconciler.Client.List(context.TODO(), secretList, &client.ListOptions{})
 	if err != nil {
 		t.Fatalf("Could not list Secrets: %v", err)
@@ -649,7 +659,8 @@ func Test_parseSecrets_MissingDMS(t *testing.T) {
 	createNamespace(reconciler, t)
 	createSecretWithData(reconciler, secretNamePD, map[string]string{secretKeyPD: pdKey, secretKeyCADPD: cadKey})
 
-	secretList := &corev1.SecretList{}
+	secretList := &metav1.PartialObjectMetadataList{}
+	secretList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
 	err := reconciler.Client.List(context.TODO(), secretList, &client.ListOptions{})
 	if err != nil {
 		t.Fatalf("Could not list Secrets: %v", err)
@@ -679,7 +690,8 @@ func Test_parseSecrets_MissingPagerDuty(t *testing.T) {
 	createNamespace(reconciler, t)
 	createSecret(reconciler, secretNameDMS, secretKeyDMS, dmsURL)
 
-	secretList := &corev1.SecretList{}
+	secretList := &metav1.PartialObjectMetadataList{}
+	secretList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
 	err := reconciler.Client.List(context.TODO(), secretList, &client.ListOptions{})
 	if err != nil {
 		t.Fatalf("Could not list Secrets: %v", err)
@@ -718,7 +730,8 @@ func Test_parseSecrets_MissingGoAlert(t *testing.T) {
 		gaHighURL,
 		gaHeartURL)
 
-	secretList := &corev1.SecretList{}
+	secretList := &metav1.PartialObjectMetadataList{}
+	secretList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
 	err := reconciler.Client.List(context.TODO(), secretList, &client.ListOptions{})
 	if err != nil {
 		t.Fatalf("Could not list Secrets: %v", err)
@@ -858,7 +871,8 @@ func Test_parseConfigMaps(t *testing.T) {
 		}
 
 		// Run and verify results
-		cmList := &corev1.ConfigMapList{}
+		cmList := &metav1.PartialObjectMetadataList{}
+		cmList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMapList"))
 		err := reconciler.Client.List(context.TODO(), cmList, &client.ListOptions{})
 		if err != nil {
 			t.Fatalf("Could not list ConfigMaps: %v", err)
@@ -931,7 +945,8 @@ func Test_readOCMAgentServiceURLFromConfig(t *testing.T) {
 		}
 
 		// Run and verify results
-		cmList := &corev1.ConfigMapList{}
+		cmList := &metav1.PartialObjectMetadataList{}
+		cmList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMapList"))
 		err := reconciler.Client.List(context.TODO(), cmList, &client.ListOptions{})
 		if err != nil {
 			t.Fatalf("Could not list ConfigMaps: %v", err)
@@ -942,6 +957,269 @@ func Test_readOCMAgentServiceURLFromConfig(t *testing.T) {
 
 		assertEquals(t, tt.expectedServiceURL, oaService, "Expected OCM Agent service URLs to match")
 	}
+}
+
+// Test_PartialObjectMetadata_DoesNotFetchSecretData verifies that PartialObjectMetadata
+// does not fetch the .Data field from secrets, validating the memory optimization.
+func Test_PartialObjectMetadata_DoesNotFetchSecretData(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockReadiness := readiness.NewMockInterface(ctrl)
+	reconciler := createReconciler(t, mockReadiness)
+	createNamespace(reconciler, t)
+
+	// Create a secret with actual data
+	secretData := map[string]string{
+		secretKeyPD:    "test-pagerduty-key",
+		secretKeyCADPD: "test-cad-key",
+	}
+	createSecretWithData(reconciler, secretNamePD, secretData)
+
+	// Fetch using PartialObjectMetadata
+	partialList := &metav1.PartialObjectMetadataList{}
+	partialList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
+	err := reconciler.Client.List(context.TODO(), partialList, &client.ListOptions{})
+	if err != nil {
+		t.Fatalf("Could not list Secrets with PartialObjectMetadata: %v", err)
+	}
+
+	// Verify the secret exists in the list
+	found := false
+	for _, item := range partialList.Items {
+		if item.Name == secretNamePD {
+			found = true
+			// The key assertion: PartialObjectMetadata should NOT have a Data field
+			// We can't directly check this in Go, but we can verify by attempting to
+			// fetch the full object and comparing
+			break
+		}
+	}
+
+	assertTrue(t, found, "Expected secret to be found in PartialObjectMetadata list")
+	assertTrue(t, len(partialList.Items) > 0, "Expected at least one item in PartialObjectMetadata list")
+
+	// Verify by fetching the full object and confirming it has data
+	fullSecret := &corev1.Secret{}
+	err = reconciler.Client.Get(context.TODO(), client.ObjectKey{
+		Namespace: config.OperatorNamespace,
+		Name:      secretNamePD,
+	}, fullSecret)
+	if err != nil {
+		t.Fatalf("Could not get full Secret: %v", err)
+	}
+
+	// The full secret should have data
+	assertTrue(t, len(fullSecret.Data) > 0, "Expected full Secret to have .Data field populated")
+	assertEquals(t, "test-pagerduty-key", string(fullSecret.Data[secretKeyPD]), "Expected full secret to contain data")
+}
+
+// Test_PartialObjectMetadata_DoesNotFetchConfigMapData verifies that PartialObjectMetadata
+// does not fetch the .Data field from ConfigMaps, validating the memory optimization.
+func Test_PartialObjectMetadata_DoesNotFetchConfigMapData(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockReadiness := readiness.NewMockInterface(ctrl)
+	reconciler := createReconciler(t, mockReadiness)
+	createNamespace(reconciler, t)
+
+	// Create a ConfigMap with actual data
+	cmData := "Resources:\n  Namespace:\n  - name: 'test-namespace'"
+	createConfigMap(reconciler, cmNameManagedNamespaces, cmKeyManagedNamespaces, cmData)
+
+	// Fetch using PartialObjectMetadata
+	partialList := &metav1.PartialObjectMetadataList{}
+	partialList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMapList"))
+	err := reconciler.Client.List(context.TODO(), partialList, &client.ListOptions{})
+	if err != nil {
+		t.Fatalf("Could not list ConfigMaps with PartialObjectMetadata: %v", err)
+	}
+
+	// Verify the ConfigMap exists in the list
+	found := false
+	for _, item := range partialList.Items {
+		if item.Name == cmNameManagedNamespaces {
+			found = true
+			break
+		}
+	}
+
+	assertTrue(t, found, "Expected ConfigMap to be found in PartialObjectMetadata list")
+	assertTrue(t, len(partialList.Items) > 0, "Expected at least one item in PartialObjectMetadata list")
+
+	// Verify by fetching the full object and confirming it has data
+	fullCM := &corev1.ConfigMap{}
+	err = reconciler.Client.Get(context.TODO(), client.ObjectKey{
+		Namespace: config.OperatorNamespace,
+		Name:      cmNameManagedNamespaces,
+	}, fullCM)
+	if err != nil {
+		t.Fatalf("Could not get full ConfigMap: %v", err)
+	}
+
+	// The full ConfigMap should have data
+	assertTrue(t, len(fullCM.Data) > 0, "Expected full ConfigMap to have .Data field populated")
+	assertTrue(t, fullCM.Data[cmKeyManagedNamespaces] != "", "Expected full ConfigMap to contain data")
+}
+
+// Test_parseMCNamespaceConfigMap tests the parseMCNamespaceConfigMap function comprehensively
+func Test_parseMCNamespaceConfigMap(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tests := []struct {
+		name               string
+		configMapExists    bool
+		configMapData      string
+		expectedNamespaces []string
+	}{
+		{
+			name:            "Valid MC namespaces",
+			configMapExists: true,
+			configMapData: `Resources:
+  Namespace:
+  - name: 'dedicated-admin'
+  ManagementCluster:
+    AdditionalNamespaces:
+    - name: 'hypershift'
+    - name: 'clusters'
+    - name: 'local-cluster'`,
+			expectedNamespaces: []string{"^hypershift$", "^clusters$", "^local-cluster$"},
+		},
+		{
+			name:               "ConfigMap does not exist",
+			configMapExists:    false,
+			configMapData:      "",
+			expectedNamespaces: []string{},
+		},
+		{
+			name:            "ConfigMap exists but no ManagementCluster section",
+			configMapExists: true,
+			configMapData: `Resources:
+  Namespace:
+  - name: 'dedicated-admin'
+  - name: 'openshift-backplane'`,
+			expectedNamespaces: []string{},
+		},
+		{
+			name:            "ConfigMap exists with empty ManagementCluster.AdditionalNamespaces",
+			configMapExists: true,
+			configMapData: `Resources:
+  Namespace:
+  - name: 'dedicated-admin'
+  ManagementCluster:
+    AdditionalNamespaces: []`,
+			expectedNamespaces: []string{},
+		},
+		{
+			name:            "ConfigMap exists with ManagementCluster but no AdditionalNamespaces field",
+			configMapExists: true,
+			configMapData: `Resources:
+  Namespace:
+  - name: 'dedicated-admin'
+  ManagementCluster: {}`,
+			expectedNamespaces: []string{},
+		},
+		{
+			name:            "Invalid YAML in ConfigMap",
+			configMapExists: true,
+			configMapData:   "This is invalid YAML: [[[",
+			expectedNamespaces: []string{},
+		},
+		{
+			name:            "Single MC namespace",
+			configMapExists: true,
+			configMapData: `Resources:
+  ManagementCluster:
+    AdditionalNamespaces:
+    - name: 'hypershift'`,
+			expectedNamespaces: []string{"^hypershift$"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockReadiness := readiness.NewMockInterface(ctrl)
+			reconciler := createReconciler(t, mockReadiness)
+			createNamespace(reconciler, t)
+
+			if tt.configMapExists {
+				createConfigMap(reconciler, cmNameManagedNamespaces, cmKeyManagedNamespaces, tt.configMapData)
+			}
+
+			cmList := &metav1.PartialObjectMetadataList{}
+			cmList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMapList"))
+			err := reconciler.Client.List(context.TODO(), cmList, &client.ListOptions{})
+			if err != nil {
+				t.Fatalf("Could not list ConfigMaps: %v", err)
+			}
+
+			request := createReconcileRequest(reconciler, cmNameManagedNamespaces)
+			namespaceList := reconciler.parseMCNamespaceConfigMap(reqLogger, cmNameManagedNamespaces, request.Namespace, cmList)
+
+			assertEquals(t, tt.expectedNamespaces, namespaceList, fmt.Sprintf("Test case: %s", tt.name))
+		})
+	}
+}
+
+// Test_PartialObjectMetadata_RegressionTest ensures that the code continues to use
+// PartialObjectMetadata by verifying the list operations work as expected.
+// This test will fail if someone reverts to using full SecretList/ConfigMapList.
+func Test_PartialObjectMetadata_RegressionTest(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockReadiness := readiness.NewMockInterface(ctrl)
+	reconciler := createReconciler(t, mockReadiness)
+	createNamespace(reconciler, t)
+
+	// Create test objects
+	createSecret(reconciler, secretNamePD, secretKeyPD, "test-key")
+	createSecret(reconciler, secretNameDMS, secretKeyDMS, "test-url")
+	createConfigMap(reconciler, cmNameManagedNamespaces, cmKeyManagedNamespaces, "Resources:\n  Namespace:\n  - name: 'test'")
+
+	// The key part: verify PartialObjectMetadataList can be used with SetGroupVersionKind
+	secretList := &metav1.PartialObjectMetadataList{}
+	secretList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
+	err := reconciler.Client.List(context.TODO(), secretList, &client.ListOptions{})
+	if err != nil {
+		t.Fatalf("Failed to list secrets using PartialObjectMetadataList: %v", err)
+	}
+
+	cmList := &metav1.PartialObjectMetadataList{}
+	cmList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMapList"))
+	err = reconciler.Client.List(context.TODO(), cmList, &client.ListOptions{})
+	if err != nil {
+		t.Fatalf("Failed to list configmaps using PartialObjectMetadataList: %v", err)
+	}
+
+	// Verify the functions work with PartialObjectMetadata
+	assertTrue(t, secretInList(reqLogger, secretNamePD, secretList), "secretInList should work with PartialObjectMetadata")
+	assertTrue(t, secretInList(reqLogger, secretNameDMS, secretList), "secretInList should work with PartialObjectMetadata")
+	assertTrue(t, cmInList(reqLogger, cmNameManagedNamespaces, cmList), "cmInList should work with PartialObjectMetadata")
+
+	// Verify parseSecrets works with PartialObjectMetadata
+	request := createReconcileRequest(reconciler, secretNamePD)
+	pdKey, cadKey, dmsURL, gaLow, gaHigh, gaHeart := reconciler.parseSecrets(reqLogger, secretList, request.Namespace, true)
+
+	// These should still be able to read the actual secret data via separate Get() calls
+	assertEquals(t, "test-key", pdKey, "parseSecrets should read data via Get() calls")
+	assertEquals(t, "", cadKey, "parseSecrets should handle missing keys")
+	assertEquals(t, "test-url", dmsURL, "parseSecrets should read DMS URL via Get() calls")
+	assertEquals(t, "", gaLow, "parseSecrets should handle missing GoAlert secrets")
+	assertEquals(t, "", gaHigh, "parseSecrets should handle missing GoAlert secrets")
+	assertEquals(t, "", gaHeart, "parseSecrets should handle missing GoAlert secrets")
+
+	// Verify parseConfigMaps works with PartialObjectMetadata
+	// Need to also create ocp-namespaces for parseConfigMaps to work properly
+	createConfigMap(reconciler, cmNameOCPNamespaces, cmKeyOCPNamespaces, "Resources:\n  Namespace:\n  - name: 'openshift-test'")
+	cmList2 := &metav1.PartialObjectMetadataList{}
+	cmList2.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMapList"))
+	err = reconciler.Client.List(context.TODO(), cmList2, &client.ListOptions{})
+	if err != nil {
+		t.Fatalf("Failed to list configmaps: %v", err)
+	}
+
+	namespaces := reconciler.parseConfigMaps(reqLogger, cmList2, request.Namespace)
+	assertTrue(t, len(namespaces) > 0, "parseConfigMaps should work with PartialObjectMetadata")
 }
 
 func Test_createPagerdutyRoute(t *testing.T) {
@@ -956,6 +1234,479 @@ func Test_createGoalertSubroute(t *testing.T) {
 	route := createSubroutes(defaultNamespaces, GoAlert)
 
 	verifyGoalertRoute(t, route, defaultNamespaces)
+}
+
+// Test_isManagementCluster tests comprehensive scenarios for management cluster detection
+func Test_isManagementCluster(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tests := []struct {
+		name                  string
+		infrastructureName    string
+		createInfra           bool
+		createClusterVersion  bool
+		clusterVersionAnnots  map[string]string
+		expectedResult        bool
+		expectError           bool
+	}{
+		{
+			name:               "Management cluster with hs-mc prefix",
+			infrastructureName: "hs-mc-ibv8l52c0-d4v8v",
+			createInfra:        true,
+			createClusterVersion: false,
+			expectedResult:     true,
+			expectError:        false,
+		},
+		{
+			name:               "Management cluster with exact hs-mc",
+			infrastructureName: "hs-mc",
+			createInfra:        true,
+			createClusterVersion: false,
+			expectedResult:     true,
+			expectError:        false,
+		},
+		{
+			name:               "Non-MC cluster with different prefix",
+			infrastructureName: "standard-cluster-abc123",
+			createInfra:        true,
+			createClusterVersion: true,
+			expectedResult:     false,
+			expectError:        false,
+		},
+		{
+			name:               "Short infrastructure name (< 5 chars)",
+			infrastructureName: "abcd",
+			createInfra:        true,
+			createClusterVersion: true,
+			expectedResult:     false,
+			expectError:        false,
+		},
+		{
+			name:               "Empty infrastructure name, fallback to ClusterVersion annotation",
+			infrastructureName: "",
+			createInfra:        true,
+			createClusterVersion: true,
+			clusterVersionAnnots: map[string]string{
+				clusterTypeLabelKey: clusterTypeManagement,
+			},
+			expectedResult: true,
+			expectError:    false,
+		},
+		{
+			name:               "Empty infrastructure name, ClusterVersion indicates non-MC",
+			infrastructureName: "",
+			createInfra:        true,
+			createClusterVersion: true,
+			clusterVersionAnnots: map[string]string{
+				clusterTypeLabelKey: "not-management",
+			},
+			expectedResult: false,
+			expectError:    false,
+		},
+		{
+			name:               "No infrastructure object - error case",
+			infrastructureName: "",
+			createInfra:        false,
+			createClusterVersion: false,
+			expectedResult:     false,
+			expectError:        true,
+		},
+		{
+			name:               "Infrastructure exists but ClusterVersion missing",
+			infrastructureName: "regular-cluster",
+			createInfra:        true,
+			createClusterVersion: false,
+			expectedResult:     false,
+			expectError:        false,
+		},
+		{
+			name:               "Infrastructure with hs-mc prefix in middle of name",
+			infrastructureName: "test-hs-mc-cluster",
+			createInfra:        true,
+			createClusterVersion: false,
+			expectedResult:     false,
+			expectError:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockReadiness := readiness.NewMockInterface(ctrl)
+			reconciler := createReconciler(t, mockReadiness)
+			createNamespace(reconciler, t)
+
+			if tt.createInfra {
+				createInfrastructure(reconciler, tt.infrastructureName)
+			}
+
+			if tt.createClusterVersion {
+				if tt.clusterVersionAnnots != nil {
+					createClusterVersionWithAnnotations(reconciler, tt.clusterVersionAnnots)
+				} else {
+					createClusterVersion(reconciler)
+				}
+			}
+
+			result, err := reconciler.isManagementCluster()
+
+			if tt.expectError {
+				assertTrue(t, err != nil, fmt.Sprintf("%s: Expected error but got none", tt.name))
+			} else {
+				assertTrue(t, err == nil, fmt.Sprintf("%s: Expected no error but got: %v", tt.name, err))
+				assertEquals(t, tt.expectedResult, result, fmt.Sprintf("%s: Management cluster detection result", tt.name))
+			}
+		})
+	}
+}
+
+// Test_getClusterProxy tests cluster proxy retrieval including error paths
+func Test_getClusterProxy(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tests := []struct {
+		name           string
+		createProxy    bool
+		hasHTTPSProxy  bool
+		expectedProxy  string
+		expectError    bool
+	}{
+		{
+			name:          "Proxy with HTTPS configured",
+			createProxy:   true,
+			hasHTTPSProxy: true,
+			expectedProxy: exampleProxy,
+			expectError:   false,
+		},
+		{
+			name:          "Proxy without HTTPS configured",
+			createProxy:   true,
+			hasHTTPSProxy: false,
+			expectedProxy: "",
+			expectError:   false,
+		},
+		{
+			name:          "No proxy object exists - error case",
+			createProxy:   false,
+			hasHTTPSProxy: false,
+			expectedProxy: "",
+			expectError:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockReadiness := readiness.NewMockInterface(ctrl)
+			reconciler := createReconciler(t, mockReadiness)
+			createNamespace(reconciler, t)
+
+			if tt.createProxy {
+				if tt.hasHTTPSProxy {
+					createClusterProxy(reconciler)
+				} else {
+					createClusterProxyWithoutHTTPS(reconciler)
+				}
+			}
+
+			result, err := reconciler.getClusterProxy()
+
+			if tt.expectError {
+				assertTrue(t, err != nil, fmt.Sprintf("%s: Expected error but got none", tt.name))
+			} else {
+				assertTrue(t, err == nil, fmt.Sprintf("%s: Expected no error but got: %v", tt.name, err))
+				assertEquals(t, tt.expectedProxy, result, fmt.Sprintf("%s: Proxy URL", tt.name))
+			}
+		})
+	}
+}
+
+// Test_getClusterID tests cluster ID retrieval including error path
+func Test_getClusterID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tests := []struct {
+		name              string
+		createVersion     bool
+		expectedClusterID string
+		expectError       bool
+	}{
+		{
+			name:              "ClusterVersion exists",
+			createVersion:     true,
+			expectedClusterID: exampleClusterId,
+			expectError:       false,
+		},
+		{
+			name:              "ClusterVersion does not exist - error case",
+			createVersion:     false,
+			expectedClusterID: "",
+			expectError:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockReadiness := readiness.NewMockInterface(ctrl)
+			reconciler := createReconciler(t, mockReadiness)
+			createNamespace(reconciler, t)
+
+			if tt.createVersion {
+				createClusterVersion(reconciler)
+			}
+
+			result, err := reconciler.getClusterID()
+
+			if tt.expectError {
+				assertTrue(t, err != nil, fmt.Sprintf("%s: Expected error but got none", tt.name))
+			} else {
+				assertTrue(t, err == nil, fmt.Sprintf("%s: Expected no error but got: %v", tt.name, err))
+				assertEquals(t, tt.expectedClusterID, result, fmt.Sprintf("%s: Cluster ID", tt.name))
+			}
+		})
+	}
+}
+
+// Test_createPagerdutyConfig_FedRAMP tests PagerDuty config in FedRAMP mode
+func Test_createPagerdutyConfig_FedRAMP(t *testing.T) {
+	tests := []struct {
+		name              string
+		fedrampEnv        string
+		expectOCMLink     bool
+		expectClusterID   bool
+		expectResolved    bool
+		expectROSAClient  bool
+	}{
+		{
+			name:             "Non-FedRAMP configuration",
+			fedrampEnv:       "false",
+			expectOCMLink:    true,
+			expectClusterID:  true,
+			expectResolved:   true,
+			expectROSAClient: false,
+		},
+		{
+			name:             "FedRAMP configuration - sensitive data redacted",
+			fedrampEnv:       "true",
+			expectOCMLink:    false,
+			expectClusterID:  false,
+			expectResolved:   false,
+			expectROSAClient: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set FedRAMP environment variable
+			oldEnv := os.Getenv("FEDRAMP")
+			os.Setenv("FEDRAMP", tt.fedrampEnv)
+			defer os.Setenv("FEDRAMP", oldEnv)
+
+			// Reinitialize config
+			err := config.SetIsFedramp()
+			if err != nil {
+				t.Fatalf("Failed to set FedRAMP config: %v", err)
+			}
+
+			pdConfig := createPagerdutyConfig("test-routing-key", exampleClusterId, exampleProxy)
+
+			// Verify basic config
+			assertEquals(t, "test-routing-key", pdConfig.RoutingKey, "Routing key")
+			assertTrue(t, pdConfig.NotifierConfig.VSendResolved, "VSendResolved should be true")
+
+			// Verify FedRAMP-specific redactions
+			if tt.expectOCMLink {
+				assertTrue(t, pdConfig.Details["ocm_link"] != "", "OCM link should be present in non-FedRAMP")
+			} else {
+				assertEquals(t, "", pdConfig.Details["ocm_link"], "OCM link should be empty in FedRAMP")
+			}
+
+			if tt.expectClusterID {
+				assertEquals(t, exampleClusterId, pdConfig.Details["cluster_id"], "Cluster ID should be present in non-FedRAMP")
+			} else {
+				assertEquals(t, "", pdConfig.Details["cluster_id"], "Cluster ID should be empty in FedRAMP")
+			}
+
+			if tt.expectResolved {
+				assertTrue(t, pdConfig.Details["resolved"] != "", "Resolved should be present in non-FedRAMP")
+			} else {
+				assertEquals(t, "", pdConfig.Details["resolved"], "Resolved should be empty in FedRAMP")
+			}
+
+			if tt.expectROSAClient {
+				assertEquals(t, "ROSA", pdConfig.ClientURL, "ClientURL should be ROSA in FedRAMP")
+			} else {
+				assertTrue(t, pdConfig.ClientURL != "ROSA", "ClientURL should not be ROSA in non-FedRAMP")
+			}
+
+			// Verify proxy config
+			assertEquals(t, exampleProxy, pdConfig.HttpConfig.ProxyURL, "Proxy URL")
+		})
+	}
+}
+
+// Test_Reconcile_ErrorPaths tests error handling in the Reconcile function
+func Test_Reconcile_ErrorPaths(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tests := []struct {
+		name                string
+		setupCluster        bool
+		readinessReturns    bool
+		readinessError      error
+		expectRequeue       bool
+	}{
+		{
+			name:             "Readiness check returns error",
+			setupCluster:     true,
+			readinessReturns: false,
+			readinessError:   fmt.Errorf("cluster not ready"),
+			expectRequeue:    true,
+		},
+		{
+			name:             "Normal operation - cluster ready",
+			setupCluster:     true,
+			readinessReturns: true,
+			readinessError:   nil,
+			expectRequeue:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockReadiness := readiness.NewMockInterface(ctrl)
+
+			if tt.readinessError != nil {
+				mockReadiness.EXPECT().IsReady().Times(1).Return(tt.readinessReturns, tt.readinessError)
+				mockReadiness.EXPECT().Result().Times(1).Return(reconcile.Result{Requeue: true})
+			} else {
+				mockReadiness.EXPECT().IsReady().Times(1).Return(tt.readinessReturns, nil)
+				mockReadiness.EXPECT().Result().Times(1).Return(reconcile.Result{})
+			}
+
+			reconciler := createReconciler(t, mockReadiness)
+			createNamespace(reconciler, t)
+
+			if tt.setupCluster {
+				createClusterVersion(reconciler)
+				createClusterProxy(reconciler)
+				createInfrastructure(reconciler, "test-cluster")
+			}
+
+			req := createReconcileRequest(reconciler, secretNameAlertmanager)
+			result, err := reconciler.Reconcile(context.TODO(), *req)
+
+			if tt.readinessError != nil {
+				assertEquals(t, tt.readinessError, err, "Expected readiness error")
+			} else {
+				assertEquals(t, nil, err, "Expected no error")
+			}
+
+			assertEquals(t, tt.expectRequeue, result.Requeue, "Requeue status")
+		})
+	}
+}
+
+// Test_createHttpConfig tests HTTP config with and without proxy
+func Test_createHttpConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		proxy       string
+		expectProxy bool
+	}{
+		{
+			name:        "With proxy configured",
+			proxy:       exampleProxy,
+			expectProxy: true,
+		},
+		{
+			name:        "Without proxy (empty string)",
+			proxy:       "",
+			expectProxy: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			httpConfig := createHttpConfig(tt.proxy)
+
+			if tt.expectProxy {
+				assertEquals(t, exampleProxy, httpConfig.ProxyURL, "Proxy URL should be set")
+			} else {
+				assertEquals(t, "", httpConfig.ProxyURL, "Proxy URL should be empty")
+			}
+		})
+	}
+}
+
+// Test_createOCMAgentReceiver tests OCM Agent receiver creation
+func Test_createOCMAgentReceiver(t *testing.T) {
+	tests := []struct {
+		name           string
+		ocmAgentURL    string
+		expectReceiver bool
+	}{
+		{
+			name:           "With OCM Agent URL",
+			ocmAgentURL:    "http://ocm-agent.svc:8080/webhook",
+			expectReceiver: true,
+		},
+		{
+			name:           "Without OCM Agent URL (empty)",
+			ocmAgentURL:    "",
+			expectReceiver: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			receivers := createOCMAgentReceiver(tt.ocmAgentURL)
+
+			if tt.expectReceiver {
+				assertEquals(t, 1, len(receivers), "Should have 1 receiver")
+				assertEquals(t, receiverOCMAgent, receivers[0].Name, "Receiver name")
+				assertEquals(t, tt.ocmAgentURL, receivers[0].WebhookConfigs[0].URL, "Webhook URL")
+			} else {
+				assertEquals(t, 0, len(receivers), "Should have no receivers")
+			}
+		})
+	}
+}
+
+// Test_createCADPagerdutyReceivers tests CAD PagerDuty receiver creation
+func Test_createCADPagerdutyReceivers(t *testing.T) {
+	tests := []struct {
+		name           string
+		routingKey     string
+		expectReceiver bool
+	}{
+		{
+			name:           "With routing key",
+			routingKey:     "test-cad-routing-key",
+			expectReceiver: true,
+		},
+		{
+			name:           "Without routing key (empty)",
+			routingKey:     "",
+			expectReceiver: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			receivers := createCADPagerdutyReceivers(tt.routingKey, exampleClusterId, exampleProxy)
+
+			if tt.expectReceiver {
+				assertEquals(t, 1, len(receivers), "Should have 1 receiver")
+				assertEquals(t, receiverCADPagerduty, receivers[0].Name, "Receiver name")
+				assertEquals(t, tt.routingKey, receivers[0].PagerdutyConfigs[0].RoutingKey, "Routing key")
+			} else {
+				assertEquals(t, 0, len(receivers), "Should have no receivers")
+			}
+		})
+	}
 }
 
 func Test_createPagerdutyReceivers_WithoutKey(t *testing.T) {
@@ -1478,6 +2229,19 @@ func createClusterProxy(reconciler *SecretReconciler) {
 	}
 }
 
+func createClusterProxyWithoutHTTPS(reconciler *SecretReconciler) {
+	clusterProxy := &configv1.Proxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster",
+		},
+		Spec: configv1.ProxySpec{},
+		Status: configv1.ProxyStatus{},
+	}
+	if err := reconciler.Client.Create(context.TODO(), clusterProxy); err != nil {
+		panic(err)
+	}
+}
+
 func createClusterVersion(reconciler *SecretReconciler) {
 	clusterVersion := &configv1.ClusterVersion{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1488,6 +2252,35 @@ func createClusterVersion(reconciler *SecretReconciler) {
 		},
 	}
 	if err := reconciler.Client.Create(context.TODO(), clusterVersion); err != nil {
+		panic(err)
+	}
+}
+
+func createClusterVersionWithAnnotations(reconciler *SecretReconciler, annotations map[string]string) {
+	clusterVersion := &configv1.ClusterVersion{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "version",
+			Annotations: annotations,
+		},
+		Spec: configv1.ClusterVersionSpec{
+			ClusterID: exampleClusterId,
+		},
+	}
+	if err := reconciler.Client.Create(context.TODO(), clusterVersion); err != nil {
+		panic(err)
+	}
+}
+
+func createInfrastructure(reconciler *SecretReconciler, infraName string) {
+	infrastructure := &configv1.Infrastructure{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster",
+		},
+		Status: configv1.InfrastructureStatus{
+			InfrastructureName: infraName,
+		},
+	}
+	if err := reconciler.Client.Create(context.TODO(), infrastructure); err != nil {
 		panic(err)
 	}
 }

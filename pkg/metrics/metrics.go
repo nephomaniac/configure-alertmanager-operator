@@ -21,7 +21,7 @@ import (
 	alertmanager "github.com/openshift/configure-alertmanager-operator/pkg/types"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -112,7 +112,7 @@ func RegisterMetrics() error {
 
 // UpdateSecretsMetrics updates all metrics related to the existence and contents of Secrets
 // used by configure-alertmanager-operator.
-func UpdateSecretsMetrics(list *corev1.SecretList, amconfig *alertmanager.Config) {
+func UpdateSecretsMetrics(list *metav1.PartialObjectMetadataList, amconfig *alertmanager.Config) {
 
 	// Default to false.
 	gaSecretExists := false
@@ -202,7 +202,7 @@ func UpdateSecretsMetrics(list *corev1.SecretList, amconfig *alertmanager.Config
 
 // UpdateConfigMapMetrics updates all metrics related to the existence and contents of ConfigMaps
 // used by configure-alertmanager-operator.
-func UpdateConfigMapMetrics(list *corev1.ConfigMapList) {
+func UpdateConfigMapMetrics(list *metav1.PartialObjectMetadataList) {
 
 	// Default to false.
 	manNsConfigMapExists := false

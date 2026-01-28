@@ -228,16 +228,20 @@ func (r *SecretReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 	// Get a list of all relevant objects in the `openshift-monitoring` namespace.
 	// This is used for determining which secrets and configMaps are present so that the necessary
 	// Alertmanager config changes can happen later.
+	// Using PartialObjectMetadata to fetch only metadata (names, labels, etc.) without the actual
+	// secret/configmap data, which significantly reduces memory usage.
 	opts := []client.ListOption{
 		client.InNamespace(request.Namespace),
 	}
-	secretList := &corev1.SecretList{}
+	secretList := &metav1.PartialObjectMetadataList{}
+	secretList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
 	err = r.Client.List(context.TODO(), secretList, opts...)
 	if err != nil {
 		reqLogger.Error(err, "Unable to list secrets")
 	}
 
-	cmList := &corev1.ConfigMapList{}
+	cmList := &metav1.PartialObjectMetadataList{}
+	cmList.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMapList"))
 	err = r.Client.List(context.TODO(), cmList, opts...)
 	if err != nil {
 		reqLogger.Error(err, "Unable to list configMaps")
@@ -938,7 +942,7 @@ func createAlertManagerConfig(reqLogger logr.Logger, pagerdutyRoutingKey, cadPag
 }
 
 // Retrieves data from all relevant configMaps. Returns a list of namespaces, represented as regular expressions, to monitor
-func (r *SecretReconciler) parseConfigMaps(reqLogger logr.Logger, cmList *corev1.ConfigMapList, cmNamespace string) (namespaceList []string) {
+func (r *SecretReconciler) parseConfigMaps(reqLogger logr.Logger, cmList *metav1.PartialObjectMetadataList, cmNamespace string) (namespaceList []string) {
 	// Retrieve namespaces from their respective configMaps, if the configMaps exist
 	managedNamespaces := r.parseNamespaceConfigMap(reqLogger, cmNameManagedNamespaces, cmNamespace, cmKeyManagedNamespaces, cmList)
 	ocpNamespaces := r.parseNamespaceConfigMap(reqLogger, cmNameOCPNamespaces, cmNamespace, cmKeyOCPNamespaces, cmList)
@@ -980,7 +984,7 @@ func (r *SecretReconciler) parseConfigMaps(reqLogger logr.Logger, cmList *corev1
 }
 
 // Returns the namespaces from a *-namespaces configMap as a list of regular expressions
-func (r *SecretReconciler) parseNamespaceConfigMap(reqLogger logr.Logger, cmName string, cmNamespace string, cmKey string, cmList *corev1.ConfigMapList) (nsList []string) {
+func (r *SecretReconciler) parseNamespaceConfigMap(reqLogger logr.Logger, cmName string, cmNamespace string, cmKey string, cmList *metav1.PartialObjectMetadataList) (nsList []string) {
 	cmExists := cmInList(reqLogger, cmName, cmList)
 	if !cmExists {
 		reqLogger.Info("INFO: ConfigMap does not exist", "ConfigMap", cmNameManagedNamespaces)
@@ -1007,7 +1011,7 @@ func (r *SecretReconciler) parseNamespaceConfigMap(reqLogger logr.Logger, cmName
 
 // parseMCNamespaceConfigMap returns management-cluster-specific namespaces from managed-namespaces configMap
 // This function extracts the ManagementCluster.AdditionalNamespaces list which should only be used on management clusters
-func (r *SecretReconciler) parseMCNamespaceConfigMap(reqLogger logr.Logger, cmName string, cmNamespace string, cmList *corev1.ConfigMapList) (nsList []string) {
+func (r *SecretReconciler) parseMCNamespaceConfigMap(reqLogger logr.Logger, cmName string, cmNamespace string, cmList *metav1.PartialObjectMetadataList) (nsList []string) {
 	cmExists := cmInList(reqLogger, cmName, cmList)
 	if !cmExists {
 		reqLogger.Info("INFO: ConfigMap does not exist", "ConfigMap", cmName)
@@ -1043,7 +1047,7 @@ func (r *SecretReconciler) parseMCNamespaceConfigMap(reqLogger logr.Logger, cmNa
 }
 
 // readOCMAgentServiceURLFromConfig returns the OCM Agent service URL from the OCM Agent configmap
-func (r *SecretReconciler) readOCMAgentServiceURLFromConfig(reqLogger logr.Logger, cmList *corev1.ConfigMapList, cmNamespace string) string {
+func (r *SecretReconciler) readOCMAgentServiceURLFromConfig(reqLogger logr.Logger, cmList *metav1.PartialObjectMetadataList, cmNamespace string) string {
 	cmExists := cmInList(reqLogger, cmNameOcmAgent, cmList)
 	if !cmExists {
 		log.Info("INFO: ConfigMap does not exist", "ConfigMap", cmNameOcmAgent)
@@ -1060,7 +1064,7 @@ func (r *SecretReconciler) readOCMAgentServiceURLFromConfig(reqLogger logr.Logge
 	return serviceURL
 }
 
-func (r *SecretReconciler) parseSecrets(reqLogger logr.Logger, secretList *corev1.SecretList, namespace string, clusterReady bool) (pagerdutyRoutingKey string, cadPagerdutyRoutingKey string, watchdogURL string, goalertURLlow string, goalertURLhigh string, goalertURLheartbeat string) {
+func (r *SecretReconciler) parseSecrets(reqLogger logr.Logger, secretList *metav1.PartialObjectMetadataList, namespace string, clusterReady bool) (pagerdutyRoutingKey string, cadPagerdutyRoutingKey string, watchdogURL string, goalertURLlow string, goalertURLhigh string, goalertURLheartbeat string) {
 	// Check for the presence of specific secrets.
 	goalertSecretExists := secretInList(reqLogger, secretNameGoalert, secretList)
 	pagerDutySecretExists := secretInList(reqLogger, secretNamePD, secretList)
@@ -1202,7 +1206,7 @@ func (r *SecretReconciler) recordClusterTypeDetectionEvent(err error) {
 
 // secretInList takes the name of Secret, and a list of Secrets, and returns a Bool
 // indicating if the name is present in the list
-func secretInList(reqLogger logr.Logger, name string, list *corev1.SecretList) bool {
+func secretInList(reqLogger logr.Logger, name string, list *metav1.PartialObjectMetadataList) bool {
 	for _, secret := range list.Items {
 		if name == secret.Name {
 			reqLogger.Info(fmt.Sprintf("DEBUG: Secret named '%s' found", secret.Name))
@@ -1215,7 +1219,7 @@ func secretInList(reqLogger logr.Logger, name string, list *corev1.SecretList) b
 
 // cmInList takes the name of ConfigMap, and a list of ConfigMaps, and returns a Bool
 // indicating if the name is present in the list
-func cmInList(reqLogger logr.Logger, name string, list *corev1.ConfigMapList) bool {
+func cmInList(reqLogger logr.Logger, name string, list *metav1.PartialObjectMetadataList) bool {
 	for _, cm := range list.Items {
 		if name == cm.Name {
 			reqLogger.Info(fmt.Sprintf("DEBUG: ConfigMap named '%s' found", cm.Name))
