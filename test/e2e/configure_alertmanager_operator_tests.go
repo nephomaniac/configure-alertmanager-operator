@@ -32,14 +32,14 @@ import (
 
 var _ = Describe("Configure AlertManager Operator", Ordered, func() {
 	var (
-		client          *resources.Resources
-		dynamicClient   dynamic.Interface
-		prom            *prometheus.Client
-		secrets         = []string{"pd-secret", "dms-secret"}
-		serviceAccounts = []string{"configure-alertmanager-operator"}
+		client           *resources.Resources
+		dynamicClient    dynamic.Interface
+		prom             *prometheus.Client
+		secrets          = []string{"pd-secret", "dms-secret"}
+		serviceAccounts  = []string{"configure-alertmanager-operator"}
+		deploymentMethod string // "olm", "pko", "both", or "unknown"
 	)
 	const (
-		maxCSVFailures    = 1 //number of csv request failures before exiting
 		timeoutDuration   = 300 * time.Second
 		pollingDuration   = 30 * time.Second
 		configMapLockFile = "configure-alertmanager-operator-lock"
@@ -65,51 +65,79 @@ var _ = Describe("Configure AlertManager Operator", Ordered, func() {
 
 		prom, err = prometheus.New(ctx, k8s)
 		Expect(err).ShouldNot(HaveOccurred(), "unable to setup prometheus client")
+
+		// Detect deployment method (OLM, PKO, both, or unknown)
+		deploymentMethod = detectDeploymentMethod(ctx, dynamicClient, namespace, operatorName)
+		GinkgoLogr.Info("Detected deployment method", "method", deploymentMethod)
+		GinkgoWriter.Printf("Deployment method: %s\n", deploymentMethod)
 	})
-	// Allow for one CSV request failure before exiting Eventually() loop...
-	csvErrCounter := 0
-	startCSVCheck := time.Now()
-	It("cluster service version exists", func(ctx context.Context) {
-		Eventually(func(ctx context.Context) bool {
-			elapsed := fmt.Sprintf("%f", time.Since(startCSVCheck).Seconds())
-			GinkgoLogr.Info("CAMO CSV check", "secondsElapsed", elapsed)
-			csvList, err := dynamicClient.Resource(
-				schema.GroupVersionResource{
-					Group:    "operators.coreos.com",
-					Version:  "v1alpha1",
-					Resource: "clusterserviceversions",
-				},
-			).Namespace(namespace).List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
-			if csvErrCounter >= maxCSVFailures {
-				// If maxCSVFailures has been exceeded, handle errors with Expect()...
-				csvErrCounter++
-				GinkgoLogr.Error(err, fmt.Sprintf("CSV error counter: %d, tolerated errors: %d", csvErrCounter, maxCSVFailures))
-				Expect(err).NotTo(HaveOccurred(), "Failed to retrieve CSV from namespace %s", namespace)
-				Expect(csvList.Items).Should(HaveLen(1))
-			}
-			if err != nil {
-				GinkgoLogr.Error(err, fmt.Sprintf("Err, fetching CSV for NS:'%s' LABEL:'%s'", namespace, labelSelector))
-				csvErrCounter++
-				return false
-			}
-			if csvList == nil {
-				GinkgoLogr.Error(nil, fmt.Sprintf("Err, nil CSV list fetching CSV for NS:'%s' LABEL:'%s'", namespace, labelSelector))
-				csvErrCounter++
-				return false
-			}
-			if len(csvList.Items) != 1 {
-				GinkgoLogr.Error(nil, fmt.Sprintf("Err, expected 1 CSV for NS:'%s' LABEL:'%s'. Got %d", namespace, labelSelector, len(csvList.Items)))
-				csvErrCounter++
-				return false
-			}
-			statusPhase, _, _ := unstructured.NestedFieldCopy(csvList.Items[0].Object, "status", "phase")
-			if statusPhase == "Succeeded" {
-				GinkgoLogr.Info("csv phase", "phase", statusPhase)
-				return true
-			}
-			GinkgoLogr.Info("csv phase", "phase", statusPhase)
-			return false
-		}, ctx).WithTimeout(timeoutDuration).WithPolling(pollingDuration).Should(BeTrue(), "CSV %s should exist and have Succeeded status", operatorName)
+	// Validate deployment method and ensure only one method is active
+	It("has valid deployment method and correct resources", func(ctx context.Context) {
+		switch deploymentMethod {
+		case "both":
+			Fail(`CRITICAL: Both OLM and PKO deployment artifacts detected simultaneously!
+
+This is an invalid state that can cause conflicts and unpredictable behavior.
+
+Found artifacts:
+  - OLM: ClusterServiceVersion in openshift-monitoring
+  - PKO: ClusterPackage for configure-alertmanager-operator
+
+REQUIRED ACTION:
+  One deployment method must be removed. During OLM-to-PKO migration, remove OLM artifacts first:
+
+  1. Delete OLM Subscription:
+     oc delete subscription configure-alertmanager-operator -n openshift-monitoring
+
+  2. Wait for CSV to be removed (may take 1-2 minutes)
+
+  3. Verify only PKO artifacts remain:
+     oc get csv -n openshift-monitoring | grep configure-alertmanager-operator
+     (should return no results)
+
+     oc get clusterpackage configure-alertmanager-operator
+     (should show the ClusterPackage)
+
+IMPACT: Operator behavior is undefined when both deployment methods are active.`)
+
+		case "unknown":
+			Fail(`FAILURE: Cannot detect deployment method - no OLM or PKO artifacts found!
+
+Expected to find one of:
+  - OLM: ClusterServiceVersion with label 'operators.coreos.com/configure-alertmanager-operator.openshift-monitoring'
+  - PKO: ClusterPackage named 'configure-alertmanager-operator'
+
+TROUBLESHOOTING:
+  1. Check if operator was deployed:
+     oc get deployment configure-alertmanager-operator -n openshift-monitoring
+
+  2. Check for OLM artifacts:
+     oc get csv -n openshift-monitoring | grep configure-alertmanager-operator
+     oc get subscription -n openshift-monitoring | grep configure-alertmanager-operator
+
+  3. Check for PKO artifacts:
+     oc get clusterpackage configure-alertmanager-operator
+     oc get package -n openshift-monitoring configure-alertmanager-operator
+
+POSSIBLE CAUSES:
+  - Operator deployment failed
+  - Wrong namespace (expected: openshift-monitoring)
+  - Resources were manually deleted
+  - Migration is in progress but incomplete`)
+
+		case "olm":
+			GinkgoLogr.Info("OLM deployment detected - validating CSV")
+			validateOLMDeployment(ctx, dynamicClient, namespace, labelSelector, timeoutDuration, pollingDuration)
+			GinkgoWriter.Printf("OLM deployment validated successfully\n")
+
+		case "pko":
+			GinkgoLogr.Info("PKO deployment detected - validating ClusterPackage")
+			validatePKODeployment(ctx, dynamicClient, operatorName, timeoutDuration, pollingDuration)
+			GinkgoWriter.Printf("PKO deployment validated successfully\n")
+
+		default:
+			Fail(fmt.Sprintf("BUG: Unexpected deployment method value: %s (expected: olm, pko, both, or unknown)", deploymentMethod))
+		}
 	})
 
 	It("service accounts exist", func(ctx context.Context) {
@@ -125,31 +153,55 @@ var _ = Describe("Configure AlertManager Operator", Ordered, func() {
 	})
 
 	It("roles exist", func(ctx context.Context) {
-		var roles rbacv1.RoleList
-		err := client.WithNamespace(namespace).List(ctx, &roles, resources.WithLabelSelector(labelSelector))
-		Expect(err).ShouldNot(HaveOccurred(), "Failed to get roles")
-		Expect(roles.Items).ShouldNot(BeZero(), "no roles found")
+		if deploymentMethod == "olm" {
+			var roles rbacv1.RoleList
+			err := client.WithNamespace(namespace).List(ctx, &roles, resources.WithLabelSelector(labelSelector))
+			Expect(err).ShouldNot(HaveOccurred(), "Failed to get roles")
+			Expect(roles.Items).ShouldNot(BeZero(), "no roles found with OLM label selector")
+		} else {
+			err := client.Get(ctx, operatorName, namespace, &rbacv1.Role{})
+			Expect(err).ShouldNot(HaveOccurred(), "Role %s not found in namespace %s", operatorName, namespace)
+		}
 	})
 
 	It("role bindings exist", func(ctx context.Context) {
-		var roleBindings rbacv1.RoleBindingList
-		err := client.WithNamespace(namespace).List(ctx, &roleBindings, resources.WithLabelSelector(labelSelector))
-		Expect(err).ShouldNot(HaveOccurred(), "Failed to get role bindings")
-		Expect(roleBindings.Items).ShouldNot(BeZero(), "no rolebindings found")
+		if deploymentMethod == "olm" {
+			var roleBindings rbacv1.RoleBindingList
+			err := client.WithNamespace(namespace).List(ctx, &roleBindings, resources.WithLabelSelector(labelSelector))
+			Expect(err).ShouldNot(HaveOccurred(), "Failed to get role bindings")
+			Expect(roleBindings.Items).ShouldNot(BeZero(), "no rolebindings found with OLM label selector")
+		} else {
+			err := client.Get(ctx, operatorName, namespace, &rbacv1.RoleBinding{})
+			Expect(err).ShouldNot(HaveOccurred(), "RoleBinding %s not found in namespace %s", operatorName, namespace)
+		}
 	})
 
 	It("cluster roles exist", func(ctx context.Context) {
-		var clusterRoles rbacv1.ClusterRoleList
-		err := client.WithNamespace(namespace).List(ctx, &clusterRoles, resources.WithLabelSelector(labelSelector))
-		Expect(err).ShouldNot(HaveOccurred(), "Failed to get cluster roles")
-		Expect(clusterRoles.Items).ShouldNot(BeZero(), "no clusterroles found")
+		if deploymentMethod == "olm" {
+			var clusterRoles rbacv1.ClusterRoleList
+			err := client.WithNamespace(namespace).List(ctx, &clusterRoles, resources.WithLabelSelector(labelSelector))
+			Expect(err).ShouldNot(HaveOccurred(), "Failed to get cluster roles")
+			Expect(clusterRoles.Items).ShouldNot(BeZero(), "no clusterroles found with OLM label selector")
+		} else {
+			for _, name := range []string{operatorName + "-view", operatorName + "-edit"} {
+				err := client.Get(ctx, name, "", &rbacv1.ClusterRole{})
+				Expect(err).ShouldNot(HaveOccurred(), "ClusterRole %s not found", name)
+			}
+		}
 	})
 
 	It("cluster role bindings exist", func(ctx context.Context) {
-		var clusterRoleBindings rbacv1.ClusterRoleBindingList
-		err := client.List(ctx, &clusterRoleBindings, resources.WithLabelSelector(labelSelector))
-		Expect(err).ShouldNot(HaveOccurred(), "Failed to get cluster role bindings")
-		Expect(clusterRoleBindings.Items).ShouldNot(BeZero(), "no clusterrolebindingss found")
+		if deploymentMethod == "olm" {
+			var clusterRoleBindings rbacv1.ClusterRoleBindingList
+			err := client.List(ctx, &clusterRoleBindings, resources.WithLabelSelector(labelSelector))
+			Expect(err).ShouldNot(HaveOccurred(), "Failed to get cluster role bindings")
+			Expect(clusterRoleBindings.Items).ShouldNot(BeZero(), "no clusterrolebindingss found")
+		} else {
+			for _, name := range []string{operatorName + "-view", operatorName + "-edit", operatorName + "-prom"} {
+				err := client.Get(ctx, name, "", &rbacv1.ClusterRoleBinding{})
+				Expect(err).ShouldNot(HaveOccurred(), "ClusterRoleBinding %s not found", name)
+			}
+		}
 	})
 
 	It("config map exists", func(ctx context.Context) {
@@ -246,7 +298,7 @@ ROOT CAUSE:
   explicitly cache ClusterVersion resources:
 
     ByObject: map[client.Object]cache.ByObject{
-        &configv1.ClusterVersion{}: {},  // ← This line is critical
+        &configv1.ClusterVersion{}: {},  // This line is critical
     }
 
 PERMISSION VERIFICATION (test as operator ServiceAccount):
@@ -339,7 +391,7 @@ ClusterVersion spec: %+v
 `, clusterVersion.Object["spec"])
 		}
 
-		GinkgoLogr.Info("✓ ClusterVersion access verified", "clusterID", clusterID)
+		GinkgoLogr.Info("ClusterVersion access verified", "clusterID", clusterID)
 	})
 
 	It("can access Proxy cluster-scoped resource", func(ctx context.Context) {
@@ -375,7 +427,7 @@ ROOT CAUSE:
   explicitly cache Proxy resources:
 
     ByObject: map[client.Object]cache.ByObject{
-        &configv1.Proxy{}: {},  // ← This line is critical for proxied clusters
+        &configv1.Proxy{}: {},  // This line is critical for proxied clusters
     }
 
 PERMISSION VERIFICATION (test as operator ServiceAccount):
@@ -463,11 +515,11 @@ NEXT STEPS:
 		// Check if proxy is actually configured (not an error if empty)
 		httpsProxy, found, _ := unstructured.NestedString(proxy.Object, "status", "httpsProxy")
 		if found && httpsProxy != "" {
-			GinkgoLogr.Info("✓ Proxy access verified - cluster uses HTTPS proxy", "httpsProxy", httpsProxy)
-			GinkgoWriter.Printf("ℹ️  Cluster is proxied - operator will configure proxy for external webhooks: %s\n", httpsProxy)
+			GinkgoLogr.Info("Proxy access verified - cluster uses HTTPS proxy", "httpsProxy", httpsProxy)
+			GinkgoWriter.Printf("Cluster is proxied - operator will configure proxy for external webhooks: %s\n", httpsProxy)
 		} else {
-			GinkgoLogr.Info("✓ Proxy access verified - cluster does not use proxy")
-			GinkgoWriter.Printf("ℹ️  Cluster is not proxied - external webhooks will connect directly\n")
+			GinkgoLogr.Info("Proxy access verified - cluster does not use proxy")
+			GinkgoWriter.Printf("Cluster is not proxied - external webhooks will connect directly\n")
 		}
 	})
 
@@ -506,7 +558,7 @@ ROOT CAUSE:
   explicitly cache Infrastructure resources:
 
     ByObject: map[client.Object]cache.ByObject{
-        &configv1.Infrastructure{}: {},  // ← This line is critical for MC detection
+        &configv1.Infrastructure{}: {},  // This line is critical for MC detection
     }
 
 PERMISSION VERIFICATION (test as operator ServiceAccount):
@@ -543,7 +595,7 @@ TROUBLESHOOTING COMMANDS:
   INFRA_NAME=$(oc get infrastructure cluster -o jsonpath='{.status.infrastructureName}')
   echo "Infrastructure name: $INFRA_NAME"
   if [[ "$INFRA_NAME" == hs-mc-* ]]; then
-    echo "✓ This is a HyperShift Management Cluster (Service Cluster)"
+    echo "This is a HyperShift Management Cluster (Service Cluster)"
     echo "  Operator should load MC-specific namespaces for routing"
   elif [[ "$INFRA_NAME" == hs-sc-* ]]; then
     echo "  This is a HyperShift Service Cluster"
@@ -631,10 +683,10 @@ This may prevent management cluster detection from working correctly.
 			// Detect cluster type
 			isManagementCluster := len(infraName) >= 5 && infraName[:5] == "hs-mc"
 			if isManagementCluster {
-				GinkgoLogr.Info("✓ Infrastructure access verified - HyperShift Management Cluster detected",
+				GinkgoLogr.Info("Infrastructure access verified - HyperShift Management Cluster detected",
 					"infrastructureName", infraName)
 				GinkgoWriter.Printf(`
-✓ Infrastructure access verified
+Infrastructure access verified
 
 Cluster Type: HyperShift Management Cluster (Service Cluster)
 Infrastructure Name: %s
@@ -661,12 +713,12 @@ MC namespace routing may not work correctly. Check with:
 If ConfigMap is intentionally missing, this warning can be ignored.
 `, err)
 				} else {
-					GinkgoLogr.Info("✓ managed-namespaces ConfigMap found for MC cluster")
+					GinkgoLogr.Info("managed-namespaces ConfigMap found for MC cluster")
 				}
 			} else {
-				GinkgoLogr.Info("✓ Infrastructure access verified - Standard cluster",
+				GinkgoLogr.Info("Infrastructure access verified - Standard cluster",
 					"infrastructureName", infraName)
-				GinkgoWriter.Printf("ℹ️  Cluster Type: Standard (not a management cluster)\n")
+				GinkgoWriter.Printf("Cluster Type: Standard (not a management cluster)\n")
 			}
 		}
 	})
@@ -785,7 +837,7 @@ TROUBLESHOOTING COMMANDS:
 		// Get container metrics via kubectl top or metrics API
 		// Note: This requires metrics-server to be running
 		GinkgoWriter.Printf(`
-ℹ️  Memory Usage Check
+Memory Usage Check
 
 To verify namespace scoping is working, check operator memory usage:
 
@@ -816,7 +868,7 @@ Current Pod: %s (Age: %s)
 			pod.Status.StartTime.Format(time.RFC3339),
 		)
 
-		GinkgoLogr.Info("✓ Operator pod is running - memory optimization check passed",
+		GinkgoLogr.Info("Operator pod is running - memory optimization check passed",
 			"pod", pod.Name,
 			"phase", pod.Status.Phase,
 			"startTime", pod.Status.StartTime,
@@ -927,7 +979,7 @@ Error: %v
 			Fail(failureMsg)
 		}
 
-		GinkgoLogr.Info("✓ managed-namespaces ConfigMap found")
+		GinkgoLogr.Info("managed-namespaces ConfigMap found")
 
 		ginkgo.By("Parsing managed-namespaces ConfigMap for MC namespaces")
 
@@ -1027,7 +1079,7 @@ ConfigMap ManagementCluster section:
 This may result in no MC namespaces being loaded for alert routing.
 `, configData)
 		} else {
-			GinkgoLogr.Info("✓ managed-namespaces ConfigMap has ManagementCluster.AdditionalNamespaces section")
+			GinkgoLogr.Info("managed-namespaces ConfigMap has ManagementCluster.AdditionalNamespaces section")
 		}
 
 		ginkgo.By("Verifying alertmanager config includes MC namespace routes")
@@ -1175,7 +1227,7 @@ NEXT STEPS:
 				Fail(failureMsg)
 			} else {
 				GinkgoWriter.Printf(`
-ℹ️  MC namespace routes not found in alertmanager config, but no hosted clusters detected
+MC namespace routes not found in alertmanager config, but no hosted clusters detected
 
 Missing namespaces in config: %v
 
@@ -1187,10 +1239,10 @@ To see what namespaces would be routed:
 `, missingNamespaces)
 			}
 		} else {
-			GinkgoLogr.Info("✓ All expected MC namespaces found in alertmanager config",
+			GinkgoLogr.Info("All expected MC namespaces found in alertmanager config",
 				"foundNamespaces", foundNamespaces)
 			GinkgoWriter.Printf(`
-✓ Management Cluster namespace routing verified
+Management Cluster namespace routing verified
 
 Infrastructure: %s
 MC Namespaces in alertmanager config: %v
@@ -1672,6 +1724,160 @@ Alerts from hosted control plane namespaces will be routed correctly.
 		Expect(err).NotTo(HaveOccurred(), "operator upgrade failed")
 	})
 })
+
+// detectDeploymentMethod checks for OLM and PKO artifacts to determine deployment method.
+// It returns "olm" if only OLM CSV is found, "pko" if only PKO ClusterPackage is found,
+// "both" if both are found (invalid state), or "unknown" if neither is found.
+func detectDeploymentMethod(ctx context.Context, dynamicClient dynamic.Interface, namespace, operatorName string) string {
+	hasOLM := false
+	hasPKO := false
+
+	// Check for OLM ClusterServiceVersion
+	csvGVR := schema.GroupVersionResource{
+		Group:    "operators.coreos.com",
+		Version:  "v1alpha1",
+		Resource: "clusterserviceversions",
+	}
+	csvList, err := dynamicClient.Resource(csvGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("operators.coreos.com/%s.%s", operatorName, namespace),
+	})
+	if err != nil {
+		GinkgoLogr.Info("OLM CSV probe failed (treating as no OLM artifacts)", "error", err.Error())
+	} else if csvList != nil && len(csvList.Items) > 0 {
+		hasOLM = true
+		GinkgoLogr.Info("OLM deployment artifacts found", "csvCount", len(csvList.Items))
+	}
+
+	// Check for PKO ClusterPackage
+	pkoPkgGVR := schema.GroupVersionResource{
+		Group:    "package-operator.run",
+		Version:  "v1alpha1",
+		Resource: "clusterpackages",
+	}
+	pkg, err := dynamicClient.Resource(pkoPkgGVR).Get(ctx, operatorName, metav1.GetOptions{})
+	if err != nil {
+		GinkgoLogr.Info("PKO ClusterPackage probe failed (treating as no PKO artifacts)", "error", err.Error())
+	} else if pkg != nil {
+		hasPKO = true
+		GinkgoLogr.Info("PKO deployment artifacts found", "clusterPackage", operatorName)
+	}
+
+	// Determine deployment method
+	if hasOLM && hasPKO {
+		return "both" // Invalid state - both methods active
+	} else if hasOLM {
+		return "olm"
+	} else if hasPKO {
+		return "pko"
+	}
+	return "unknown" // Neither method found
+}
+
+// validateOLMDeployment validates that OLM CSV exists and is in Succeeded phase.
+// It polls the ClusterServiceVersion resource in the specified namespace using the provided
+// labelSelector, and expects exactly one CSV with status.phase == "Succeeded".
+// The function fails the test if the CSV is not found or not in Succeeded state within the timeout.
+func validateOLMDeployment(ctx context.Context, dynamicClient dynamic.Interface, namespace, labelSelector string, timeout, polling time.Duration) {
+	startTime := time.Now()
+
+	csvGVR := schema.GroupVersionResource{
+		Group:    "operators.coreos.com",
+		Version:  "v1alpha1",
+		Resource: "clusterserviceversions",
+	}
+
+	Eventually(func(ctx context.Context) bool {
+		elapsed := time.Since(startTime).Seconds()
+		GinkgoLogr.Info("Checking OLM CSV status", "secondsElapsed", elapsed)
+
+		csvList, err := dynamicClient.Resource(csvGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: labelSelector,
+		})
+
+		if err != nil {
+			GinkgoLogr.Error(err, "Error fetching CSV, will retry", "namespace", namespace, "labelSelector", labelSelector)
+			return false
+		}
+
+		if csvList == nil || len(csvList.Items) != 1 {
+			itemCount := 0
+			if csvList != nil {
+				itemCount = len(csvList.Items)
+			}
+			GinkgoLogr.Info("CSV not ready, will retry", "expected", 1, "got", itemCount)
+			return false
+		}
+
+		statusPhase, found, err := unstructured.NestedString(csvList.Items[0].Object, "status", "phase")
+		if err != nil {
+			GinkgoLogr.Error(err, "Failed to read CSV status.phase")
+			return false
+		}
+		if !found {
+			GinkgoLogr.Info("CSV status.phase not yet set, will retry")
+			return false
+		}
+		if statusPhase == "Succeeded" {
+			GinkgoLogr.Info("CSV phase is Succeeded", "phase", statusPhase)
+			return true
+		}
+
+		GinkgoLogr.Info("CSV phase not yet Succeeded", "phase", statusPhase)
+		return false
+	}, ctx).WithTimeout(timeout).WithPolling(polling).Should(BeTrue(),
+		"CSV should exist and have Succeeded status")
+}
+
+// validatePKODeployment validates that PKO ClusterPackage exists and is ready.
+// It polls the ClusterPackage resource with the given operatorName and checks for a
+// status.conditions entry with type="Available" and status="True".
+// The function fails the test if the ClusterPackage is not found or not Available within the timeout.
+func validatePKODeployment(ctx context.Context, dynamicClient dynamic.Interface, operatorName string, timeout, polling time.Duration) {
+	pkoPkgGVR := schema.GroupVersionResource{
+		Group:    "package-operator.run",
+		Version:  "v1alpha1",
+		Resource: "clusterpackages",
+	}
+
+	Eventually(func(ctx context.Context) bool {
+		pkg, err := dynamicClient.Resource(pkoPkgGVR).Get(ctx, operatorName, metav1.GetOptions{})
+		if err != nil {
+			GinkgoLogr.Error(err, "Error fetching ClusterPackage", "name", operatorName)
+			return false
+		}
+
+		if pkg == nil {
+			GinkgoLogr.Error(nil, "Nil ClusterPackage returned", "name", operatorName)
+			return false
+		}
+
+		// Check if ClusterPackage has Available condition
+		conditions, found, err := unstructured.NestedSlice(pkg.Object, "status", "conditions")
+		if err != nil || !found {
+			GinkgoLogr.Info("ClusterPackage status.conditions not found", "name", operatorName)
+			return false
+		}
+
+		for _, cond := range conditions {
+			condMap, ok := cond.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			condType, _, _ := unstructured.NestedString(condMap, "type")
+			condStatus, _, _ := unstructured.NestedString(condMap, "status")
+
+			if condType == "Available" && condStatus == "True" {
+				GinkgoLogr.Info("ClusterPackage is Available", "name", operatorName)
+				return true
+			}
+		}
+
+		GinkgoLogr.Info("ClusterPackage not yet Available", "name", operatorName)
+		return false
+	}, ctx).WithTimeout(timeout).WithPolling(polling).Should(BeTrue(),
+		"ClusterPackage %s should exist and be Available", operatorName)
+}
 
 // Helper function for min of two integers
 func min(a, b int) int {
