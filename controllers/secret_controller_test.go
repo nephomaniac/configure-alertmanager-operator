@@ -250,7 +250,7 @@ func verifyPagerdutyReceivers(t *testing.T, key string, proxy string, receivers 
 
 func verifyCADPagerdutyRoute(t *testing.T, route *alertmanager.Route) {
 	assertEquals(t, receiverCADPagerduty, route.Receiver, "Receiver Name")
-	assertEquals(t, routeCADLabelValue, route.Match[routeCADLabel], "Match route-to-cad label")
+	assertEquals(t, routeCADLabelValue, route.Match[routeCADLabel], "Match route_to_cad label")
 }
 
 func verifyCADPagerdutyReceivers(t *testing.T, key string, proxy string, receivers []*alertmanager.Receiver) {
