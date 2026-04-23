@@ -47,6 +47,12 @@ rules:
     verbs:
       - get
       - delete
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -129,26 +135,41 @@ spec:
               #!/bin/sh
               set -euxo pipefail
 
-              # Clean up OLM resources for configure-alertmanager-operator
-              # Use fully-qualified resource names (subscription.operators.coreos.com, catalogsource.operators.coreos.com)
-              # to explicitly target the OLM API group and avoid ambiguity
+              ERRORS=""
+              NS="openshift-monitoring"
 
-              # Delete ClusterServiceVersion
-              oc -n openshift-monitoring delete csv -l "operators.coreos.com/configure-alertmanager-operator.openshift-monitoring" || true
+              oc -n "$NS" delete csv -l "operators.coreos.com/configure-alertmanager-operator.${NS}" --ignore-not-found=true \
+                || ERRORS="${ERRORS}Failed to delete CSV. "
 
-              # Delete Subscription
-              oc -n openshift-monitoring delete subscription.operators.coreos.com configure-alertmanager-operator || true
+              oc -n "$NS" delete subscription.operators.coreos.com configure-alertmanager-operator --ignore-not-found=true \
+                || ERRORS="${ERRORS}Failed to delete Subscription. "
 
-              # Delete CatalogSource
-              oc -n openshift-monitoring delete catalogsource.operators.coreos.com configure-alertmanager-operator-registry || true
+              oc -n "$NS" delete catalogsource.operators.coreos.com configure-alertmanager-operator-registry --ignore-not-found=true \
+                || ERRORS="${ERRORS}Failed to delete CatalogSource. "
 
-              # Delete CAMO-specific ClusterRoleBinding (allows PKO to recreate it)
-              oc delete clusterrolebinding configure-alertmanager-operator-prom || true
+              oc delete clusterrolebinding configure-alertmanager-operator-prom --ignore-not-found=true \
+                || ERRORS="${ERRORS}Failed to delete ClusterRoleBinding. "
 
-              # Delete CAMO ServiceAccount (allows PKO to recreate it without Hive labels)
-              oc -n openshift-monitoring delete serviceaccount configure-alertmanager-operator || true
+              oc -n "$NS" delete serviceaccount configure-alertmanager-operator --ignore-not-found=true \
+                || ERRORS="${ERRORS}Failed to delete ServiceAccount. "
 
-              # Note: OperatorGroup not deleted - CAMO uses existing openshift-monitoring OperatorGroup
+              if [ -n "$ERRORS" ]; then
+                echo "WARNING: OLM cleanup completed with errors: ${ERRORS}"
+                oc create -f - <<EVENTEOF || true
+              apiVersion: v1
+              kind: Event
+              metadata:
+                generateName: olm-cleanup-warning-
+                namespace: ${NS}
+              involvedObject:
+                apiVersion: v1
+                kind: Namespace
+                name: ${NS}
+              reason: OLMCleanupErrors
+              message: "OLM cleanup job completed with errors: ${ERRORS}"
+              type: Warning
+              EVENTEOF
+              fi
           resources:
             requests:
               cpu: 100m
