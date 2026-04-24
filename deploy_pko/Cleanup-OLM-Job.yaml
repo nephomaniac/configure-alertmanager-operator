@@ -138,11 +138,11 @@ spec:
               ERRORS=""
               NS="openshift-monitoring"
 
-              oc -n "$NS" delete csv -l "operators.coreos.com/configure-alertmanager-operator.${NS}" --ignore-not-found=true \
-                || ERRORS="${ERRORS}Failed to delete CSV. "
-
               oc -n "$NS" delete subscription.operators.coreos.com configure-alertmanager-operator --ignore-not-found=true \
                 || ERRORS="${ERRORS}Failed to delete Subscription. "
+
+              oc -n "$NS" delete csv -l "operators.coreos.com/configure-alertmanager-operator.${NS}" --ignore-not-found=true \
+                || ERRORS="${ERRORS}Failed to delete CSV. "
 
               oc -n "$NS" delete catalogsource.operators.coreos.com configure-alertmanager-operator-registry --ignore-not-found=true \
                 || ERRORS="${ERRORS}Failed to delete CatalogSource. "
