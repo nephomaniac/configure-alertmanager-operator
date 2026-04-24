@@ -38,3 +38,23 @@ spec:
           type: string
           default: "false"
       type: object
+test:
+  template:
+  - name: default
+    context:
+      package:
+        metadata:
+          name: configure-alertmanager-operator
+          namespace: openshift-monitoring
+      config:
+        image: "quay.io/example/configure-alertmanager-operator:test"
+        fedramp: "false"
+  - name: fedramp
+    context:
+      package:
+        metadata:
+          name: configure-alertmanager-operator
+          namespace: openshift-monitoring
+      config:
+        image: "quay.io/example/configure-alertmanager-operator:test"
+        fedramp: "true"
