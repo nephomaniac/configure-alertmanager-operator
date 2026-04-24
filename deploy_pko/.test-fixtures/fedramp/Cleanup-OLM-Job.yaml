@@ -154,8 +154,8 @@ spec:
                 || ERRORS="${ERRORS}Failed to delete ServiceAccount. "
 
               if [ -n "$ERRORS" ]; then
-                echo "WARNING: OLM cleanup completed with errors: ${ERRORS}"
-                oc create -f - <<EVENTEOF || true
+                echo "WARNING: OLM cleanup completed with errors: ${ERRORS}" >&2
+                oc create -f - <<EVENTEOF || echo "Failed to create warning event. See script output" >&2
               apiVersion: v1
               kind: Event
               metadata:
