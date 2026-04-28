@@ -41,37 +41,9 @@ rules:
   - apiGroups:
       - ""
     resources:
-      - serviceaccounts
-    resourceNames:
-      - configure-alertmanager-operator
-    verbs:
-      - get
-      - delete
-  - apiGroups:
-      - ""
-    resources:
       - events
     verbs:
       - create
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: olm-cleanup-configure-alertmanager-operator
-  annotations:
-    package-operator.run/phase: cleanup-rbac
-    package-operator.run/collision-protection: IfNoController
-rules:
-  # Permission to delete CAMO-specific ClusterRoleBinding
-  - apiGroups:
-      - rbac.authorization.k8s.io
-    resources:
-      - clusterrolebindings
-    resourceNames:
-      - configure-alertmanager-operator-prom
-    verbs:
-      - get
-      - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -84,22 +56,6 @@ metadata:
 roleRef:
   kind: Role
   name: olm-cleanup
-  apiGroup: rbac.authorization.k8s.io
-subjects:
-  - kind: ServiceAccount
-    name: olm-cleanup
-    namespace: openshift-monitoring
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: olm-cleanup-configure-alertmanager-operator
-  annotations:
-    package-operator.run/phase: cleanup-rbac
-    package-operator.run/collision-protection: IfNoController
-roleRef:
-  kind: ClusterRole
-  name: olm-cleanup-configure-alertmanager-operator
   apiGroup: rbac.authorization.k8s.io
 subjects:
   - kind: ServiceAccount
@@ -146,12 +102,6 @@ spec:
 
               oc -n "$NS" delete catalogsource.operators.coreos.com configure-alertmanager-operator-registry --ignore-not-found=true \
                 || ERRORS="${ERRORS}Failed to delete CatalogSource. "
-
-              oc delete clusterrolebinding configure-alertmanager-operator-prom --ignore-not-found=true \
-                || ERRORS="${ERRORS}Failed to delete ClusterRoleBinding. "
-
-              oc -n "$NS" delete serviceaccount configure-alertmanager-operator --ignore-not-found=true \
-                || ERRORS="${ERRORS}Failed to delete ServiceAccount. "
 
               if [ -n "$ERRORS" ]; then
                 echo "WARNING: OLM cleanup completed with errors: ${ERRORS}" >&2
