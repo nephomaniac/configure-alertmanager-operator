@@ -6,8 +6,6 @@ require (
 	github.com/go-logr/logr v1.4.3
 	github.com/onsi/ginkgo/v2 v2.32.0
 	github.com/onsi/gomega v1.42.1
-	// github.com/openshift/api v0.0.1
-	github.com/openshift/osde2e-common v0.0.0-20260618165637-751e0d23bb9d
 	github.com/operator-framework/operator-lib v0.19.0
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.92.1
 	github.com/prometheus/client_golang v1.23.2
@@ -23,6 +21,8 @@ require (
 
 require (
 	github.com/openshift/api v0.0.0-20260615110019-261e3a0546f3
+	github.com/openshift/client-go v0.0.0-20260603140539-6892dc3e1ffc
+	github.com/openshift/library-go v0.0.0-20260527152424-3ad832f9a5a5
 	github.com/prometheus/alertmanager v0.33.1
 )
 
@@ -102,8 +102,6 @@ require (
 	github.com/mwitkow/go-conntrack v0.0.0-20190716064945-2f068394615f // indirect
 	github.com/oklog/run v1.2.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
-	github.com/openshift/client-go v0.0.0-20260603140539-6892dc3e1ffc // indirect
-	github.com/openshift/library-go v0.0.0-20260527152424-3ad832f9a5a5 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect

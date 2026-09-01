@@ -10,12 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	utils "github.com/openshift/configure-alertmanager-operator/test/e2e/utils"
-	"github.com/openshift/osde2e-common/pkg/clients/openshift"
-	"github.com/openshift/osde2e-common/pkg/clients/prometheus"
 	amconfig "github.com/prometheus/alertmanager/config"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -35,7 +32,7 @@ var _ = Describe("Configure AlertManager Operator", Ordered, func() {
 	var (
 		client           *resources.Resources
 		dynamicClient    dynamic.Interface
-		prom             *prometheus.Client
+		prom             *prometheusClient
 		amClient         *utils.AlertmanagerClient
 		secrets          = []string{"pd-secret", "dms-secret"}
 		serviceAccounts  = []string{"configure-alertmanager-operator"}
@@ -64,11 +61,7 @@ var _ = Describe("Configure AlertManager Operator", Ordered, func() {
 		kubeClient, err := kubernetes.NewForConfig(cfg)
 		Expect(err).ShouldNot(HaveOccurred(), "failed to create kubernetes client")
 
-		// Create openshift client locally for prometheus client setup
-		k8s, err := openshift.New(GinkgoLogr)
-		Expect(err).ShouldNot(HaveOccurred(), "unable to setup openshift client")
-
-		prom, err = prometheus.New(ctx, k8s)
+		prom, err = newPrometheusClient(ctx, cfg)
 		Expect(err).ShouldNot(HaveOccurred(), "unable to setup prometheus client")
 
 		amClient, err = utils.NewAlertmanagerClient(ctx, dynamicClient, kubeClient, cfg)
@@ -275,7 +268,7 @@ POSSIBLE CAUSES:
 	// when the operator cache is scoped to openshift-monitoring namespace
 
 	It("can access ClusterVersion cluster-scoped resource", func(ctx context.Context) {
-		ginkgo.By("Verifying operator can read ClusterVersion despite namespace-scoped cache")
+		By("Verifying operator can read ClusterVersion despite namespace-scoped cache")
 
 		// ClusterVersion is a cluster-scoped resource that the operator needs for:
 		// 1. Getting cluster ID for PagerDuty/DMS integration labels
@@ -403,7 +396,7 @@ ClusterVersion spec: %+v
 	})
 
 	It("can access Proxy cluster-scoped resource", func(ctx context.Context) {
-		ginkgo.By("Verifying operator can read cluster Proxy configuration")
+		By("Verifying operator can read cluster Proxy configuration")
 
 		// Proxy is a cluster-scoped resource that the operator needs for:
 		// 1. Configuring HTTP proxy for external webhooks (PagerDuty, DMS, GoAlert)
@@ -532,7 +525,7 @@ NEXT STEPS:
 	})
 
 	It("can access Infrastructure cluster-scoped resource", func(ctx context.Context) {
-		ginkgo.By("Verifying operator can read Infrastructure and detect cluster type")
+		By("Verifying operator can read Infrastructure and detect cluster type")
 
 		// Infrastructure is a cluster-scoped resource that the operator needs for:
 		// 1. Detecting if cluster is a HyperShift management cluster (hs-mc-*)
@@ -732,7 +725,7 @@ If ConfigMap is intentionally missing, this warning can be ignored.
 	})
 
 	It("operator pod memory usage is within expected limits", func(ctx context.Context) {
-		ginkgo.By("Verifying namespace scoping reduces operator memory footprint")
+		By("Verifying namespace scoping reduces operator memory footprint")
 
 		// With namespace scoping, the operator should use significantly less memory
 		// because it only caches Secrets/ConfigMaps from openshift-monitoring instead
@@ -884,7 +877,7 @@ Current Pod: %s (Age: %s)
 	})
 
 	It("routes alerts for management cluster namespaces when on MC cluster", func(ctx context.Context) {
-		ginkgo.By("Checking if this is a HyperShift Management Cluster")
+		By("Checking if this is a HyperShift Management Cluster")
 
 		// First, determine if this is a management cluster
 		var infra unstructured.Unstructured
@@ -916,7 +909,7 @@ Current Pod: %s (Age: %s)
 		GinkgoLogr.Info("Management Cluster detected - verifying MC namespace routing",
 			"infrastructureName", infraName)
 
-		ginkgo.By("Verifying managed-namespaces ConfigMap exists")
+		By("Verifying managed-namespaces ConfigMap exists")
 
 		var managedNamespacesCM v1.ConfigMap
 		err = client.Get(ctx, "managed-namespaces", namespace, &managedNamespacesCM)
@@ -989,7 +982,7 @@ Error: %v
 
 		GinkgoLogr.Info("managed-namespaces ConfigMap found")
 
-		ginkgo.By("Parsing managed-namespaces ConfigMap for MC namespaces")
+		By("Parsing managed-namespaces ConfigMap for MC namespaces")
 
 		// Check if ConfigMap has the expected key
 		configData, exists := managedNamespacesCM.Data["managed_namespaces.yaml"]
@@ -1090,7 +1083,7 @@ This may result in no MC namespaces being loaded for alert routing.
 			GinkgoLogr.Info("managed-namespaces ConfigMap has ManagementCluster.AdditionalNamespaces section")
 		}
 
-		ginkgo.By("Verifying alertmanager config includes MC namespace routes")
+		By("Verifying alertmanager config includes MC namespace routes")
 
 		var amSecret v1.Secret
 		err = client.Get(ctx, "alertmanager-main", namespace, &amSecret)
@@ -1392,15 +1385,15 @@ Alerts from hosted control plane namespaces will be routed correctly.
 				_ = amClient.ResolveAlerts(ctx, []utils.AlertmanagerV2PostAlert{sourceAlert, targetAlert})
 			})
 
-			ginkgo.By("Injecting synthetic source alert (ClusterOperatorDegraded)")
+			By("Injecting synthetic source alert (ClusterOperatorDegraded)")
 			err := amClient.PostAlerts(ctx, []utils.AlertmanagerV2PostAlert{sourceAlert})
 			Expect(err).NotTo(HaveOccurred(), "failed to post source alert")
 
-			ginkgo.By("Injecting synthetic target alert (ClusterOperatorDown)")
+			By("Injecting synthetic target alert (ClusterOperatorDown)")
 			err = amClient.PostAlerts(ctx, []utils.AlertmanagerV2PostAlert{targetAlert})
 			Expect(err).NotTo(HaveOccurred(), "failed to post target alert")
 
-			ginkgo.By("Verifying ClusterOperatorDown is inhibited via Alertmanager v2 API")
+			By("Verifying ClusterOperatorDown is inhibited via Alertmanager v2 API")
 			Eventually(ctx, func() error {
 				alerts, err := amClient.GetAlertsByName(ctx, "ClusterOperatorDown", "camo-inhibit-test")
 				if err != nil {
@@ -1787,13 +1780,7 @@ Alerts from hosted control plane namespaces will be routed correctly.
 	})
 
 	PIt("can be upgraded", func(ctx context.Context) {
-		log.SetLogger(GinkgoLogr)
-		k8sClient, err := openshift.New(ginkgo.GinkgoLogr)
-		Expect(err).ShouldNot(HaveOccurred(), "unable to setup k8s client")
-
-		ginkgo.By("forcing operator upgrade")
-		err = k8sClient.UpgradeOperator(ctx, operatorName, namespace)
-		Expect(err).NotTo(HaveOccurred(), "operator upgrade failed")
+		Skip("upgrade testing not supported after osde2e-common removal")
 	})
 })
 
