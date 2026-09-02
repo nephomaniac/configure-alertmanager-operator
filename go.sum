@@ -240,8 +240,6 @@ github.com/openshift/client-go v0.0.0-20260603140539-6892dc3e1ffc h1:yCLc/pmoZ4Y
 github.com/openshift/client-go v0.0.0-20260603140539-6892dc3e1ffc/go.mod h1:eqfaEX/V7xHMZ8Mpf72J03RnnY/kEqoZVLpkpjy5p6s=
 github.com/openshift/library-go v0.0.0-20260527152424-3ad832f9a5a5 h1:IPkGTFwKR7Y6/6NNsp681u8Qi/zZGJdY2dySYVTuyyc=
 github.com/openshift/library-go v0.0.0-20260527152424-3ad832f9a5a5/go.mod h1:/HBhy6jm/igWI3Y1vYFwFG3ZCcXmnNsKUT6VBpPyM9A=
-github.com/openshift/osde2e-common v0.0.0-20260618165637-751e0d23bb9d h1:L0AAQ1d3eDeMgNDEiFlZrjdaskZ2pVlZC34rM91iz9Y=
-github.com/openshift/osde2e-common v0.0.0-20260618165637-751e0d23bb9d/go.mod h1:swgg1YIOtSLyz4YYH+IWPNdCC1WEucYrprScwtNFPTI=
 github.com/operator-framework/operator-lib v0.19.0 h1:az6ogYj21rtU0SF9uYctRLyKp2dtlqTsmpfehFy6Ce8=
 github.com/operator-framework/operator-lib v0.19.0/go.mod h1:KxycAjFnHt0DBtHmH3Jm7yHcY5sdrshPKTqM/HKAQ08=
 github.com/pascaldekloe/goe v0.1.0 h1:cBOtyMzM9HTpWjXfbbunk26uA6nG3a8n06Wieeh0MwY=
